@@ -115,6 +115,7 @@ Forwarder::onIncomingInterest(const Interest& interest, const FaceEndpoint& ingr
   // /localhost scope control
   bool isViolatingLocalhost = ingress.face.getScope() == ndn::nfd::FACE_SCOPE_NON_LOCAL &&
                               scope_prefix::LOCALHOST.isPrefixOf(interest.getName());
+  //isPrefixOf() 是一个函数，判断左边的名字是不是右边名字的前缀。
   if (isViolatingLocalhost) {
     NFD_LOG_DEBUG("onIncomingInterest in=" << ingress << " interest=" << interest.getName()
                   << " nonce=" << nonce << " violates /localhost");

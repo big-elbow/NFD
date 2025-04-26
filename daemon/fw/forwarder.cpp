@@ -124,6 +124,7 @@ Forwarder::onIncomingInterest(const Interest& interest, const FaceEndpoint& ingr
   }
 
   // detect duplicate Nonce with Dead Nonce List
+  //DNL 是用来记录最近见过的 Interest Nonce，用来检测是否有循环 Interest。
   bool hasDuplicateNonceInDnl = m_deadNonceList.has(interest.getName(), nonce);
   if (hasDuplicateNonceInDnl) {
     // go to Interest loop pipeline
@@ -131,7 +132,13 @@ Forwarder::onIncomingInterest(const Interest& interest, const FaceEndpoint& ingr
     return;
   }
 
-  // strip forwarding hint if Interest has reached producer region
+   //如果 Interest 已经到了目标区域，就把它原来携带的转发提示去掉，因为它已经不需要再“被引导”了，直接找生产者就好。
+  /*Producer Region 就是发布者所在的网络区域，例如：某个特定的子网、某个自治系统（AS）或者是某个明确标记为“生产者”的节点集合
+  * 这些“区域”信息是在 NFD 里通过一个叫 NetworkRegionTable 的组件维护的。
+  * 可能的判断方法包括：匹配 Forwarding Hint 的前缀和本地配置的 region name；根据 router 的标识符（ID）是否属于指定区域，
+  * 利用手动配置或动态学习得出的“我在哪个区域”信息*/
+
+   // strip forwarding hint if Interest has reached producer region
   if (!interest.getForwardingHint().empty() &&
       m_networkRegionTable.isInProducerRegion(interest.getForwardingHint())) {
     NFD_LOG_DEBUG("onIncomingInterest in=" << ingress << " interest=" << interest.getName()
@@ -139,15 +146,46 @@ Forwarder::onIncomingInterest(const Interest& interest, const FaceEndpoint& ingr
     const_cast<Interest&>(interest).setForwardingHint({});
   }
 
+  
+  //下一步是使用 Interst 包中指定的名称和选择器查找现有的或创建新的PIT条目。至此，PIT条目成为对该传入 Interest 进行后续处理的管道的处理对象。请注意，NFD在执行 ContentStore 查找之前创建了PIT条目。
+  //由于 ContentStore 可能明显大于PIT，所以查询 ContentStore 的代价是高于查询 PIT 的，在下面即将讨论的一些情况下，是可以跳过CS查找，所以在查询 ContentStore 之前查询PIT或创建相应的表项是有助于减小查询开销的。
+
+  
   // PIT insert
   shared_ptr<pit::Entry> pitEntry = m_pit.insert(interest).first;
+  
+  //m_pit：表示的是 PIT（Pending Interest Table），也就是NDN 转发器中的挂起请求表，用来记录哪些 Interest 已经被收到但还没回应。
+  //调用 m_pit 的 insert() 方法，把一个新的 Interest 插入进 PIT 表中，尝试把一个新的 Interest 插入 PIT，如果已经存在相同的条目，则返回现有的。
+  //.first：说明 insert() 方法的返回值是一个 pair，所以 .first 拿到的是这个 Interest 对应的 PIT Entry，不管它是新创建的还是已有的。
+  //shared_ptr<pit::Entry> pitEntry定义一个智能指针变量 pitEntry，指向这个 PIT 表项。
+  
+  /*在 C++ 中，pair 是一个 模板类，用于存储两个相关的值，可以是不同类型的值。它的定义是这样的：
+  * template <typename T1, typename T2>
+  * struct pair {
+      T1 first;
+      T2 second;
+     };
+     
+  * pair 就是一个 由两个元素组成的容器。你可以通过 first 和 second 成员访问这两个元素。
+  * 假设你有一个 pair<int, std::string>，表示一个数字和一个字符串的组合：
+   std::pair<int, std::string> myPair = std::make_pair(1, "hello");
+   std::cout << "First: " << myPair.first << ", Second: " << myPair.second << std::endl;
+  * 输出：
+    First: 1, Second: hello
+  */
 
+  
+  /*在进一步处理传入 Interest 之前，查询 PIT 中对应表项的 in-records （ 这边查询的是同一个 PIT entry 的 in-record 列表 ）。
+  * 如果在不同 Face 的记录中找到匹配项（ 即找到一个 in-record 记录，它的 Nonce 和传入 Interest 的 Nonce 是一样的，但是是从不同的 Face传入的 ）*/
+  
   // detect duplicate Nonce in PIT entry
   int dnw = fw::findDuplicateNonce(*pitEntry, nonce, ingress.face);
   bool hasDuplicateNonceInPit = dnw != fw::DUPLICATE_NONCE_NONE;
+  //请注意，如果在同一个 p2p Face 收到相同 Nonce 的同名 Interest，则该 Interest 被视为合法重发，因为在这种情况下不存在持续循环的风险
   if (ingress.face.getLinkType() == ndn::nfd::LINK_TYPE_POINT_TO_POINT) {
     // for p2p face: duplicate Nonce from same incoming face is not loop
     hasDuplicateNonceInPit = hasDuplicateNonceInPit && !(dnw & fw::DUPLICATE_NONCE_IN_SAME);
+    //dnw & fw::DUPLICATE_NONCE_IN_SAME：检查是否是来自同一面（即同一入站 Face）
   }
   if (hasDuplicateNonceInPit) {
     // go to Interest loop pipeline

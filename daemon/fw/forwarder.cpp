@@ -192,17 +192,58 @@ Forwarder::onIncomingInterest(const Interest& interest, const FaceEndpoint& ingr
     this->onInterestLoop(interest, ingress);
     return;
   }
+ /*
+ // 下面是 fw::findDuplicateNonce 的实现
+int
+findDuplicateNonce(const pit::Entry& pitEntry, uint32_t nonce, const Face& face)
+{
+  int dnw = DUPLICATE_NONCE_NONE;
 
+  for (const pit::InRecord& inRecord : pitEntry.getInRecords()) {
+    if (inRecord.getLastNonce() == nonce) {
+      if (&inRecord.getFace() == &face) {
+      //这行代码在做的是对比两个指针，检查它们是否指向同一个 Face 对象。
+        dnw |= DUPLICATE_NONCE_IN_SAME;
+        //  |= 是 按位或赋值（bitwise OR assignment） 运算符，也就是说，把 dnw 当前已有的值，和 DUPLICATE_NONCE_IN_SAME 做按位“或”运算（|），然后把结果重新赋给 dnw
+        //因为 dnw 是用来记录 多种检测到的“重复 Nonce”类型的，而 dnw 需要同时记录多个信息，所以每种情况用不同的位来表示
+      }
+      //如果之前 dnw 为空（0），那现在 dnw = DUPLICATE_NONCE_IN_SAME；如果之前 dnw 已经有别的标志，比如 DUPLICATE_NONCE_OUT_OTHER，那加上这个后，dnw 同时有了两个标志。
+      else {
+        dnw |= DUPLICATE_NONCE_IN_OTHER;
+      }
+    }
+  }
+  for (const pit::OutRecord& outRecord : pitEntry.getOutRecords()) {
+    if (outRecord.getLastNonce() == nonce) {
+      if (&outRecord.getFace() == &face) {
+        dnw |= DUPLICATE_NONCE_OUT_SAME;//同一个 Face 上发出和收到了一样的 Nonce 的 Interest，可能是自己发出去又自己收回来了（异常情况，要注意）
+      }
+      else {
+        dnw |= DUPLICATE_NONCE_OUT_OTHER;//发到别的 Face 出去的 Interest，又从其他 Face 收到了同样的 Nonce，很可能是 Interest 在网络里绕了一圈又回来了（真的可能是 Interest 循环了）
+      }
+    }
+  }
+  return dnw;
+}
+  */
+
+  
   // is pending?
   if (!pitEntry->hasInRecords()) {
     m_cs.find(interest,
               [=] (const Interest& i, const Data& d) { onContentStoreHit(i, ingress, pitEntry, d); },
               [=] (const Interest& i) { onContentStoreMiss(i, ingress, pitEntry); });
+    //lambda[=]
   }
   else {
     this->onContentStoreMiss(interest, ingress, pitEntry);
   }
 }
+
+/*如果 Interest 是非未决的（ not pending ），则去 ContentStore 查询是否有对应的匹配项（Cs::find，第3.3.1节）。
+* 否则，不需要进行CS查找，直接传递给 ContentStore miss 管道处理，因为未决的 Interest 意味着先前查询过 ContentStore ，且在 ContentStore 中未能命中 。
+* 对于非未决的 Interest ，根据CS是否匹配，选择将 Interest 传递给 ContentStore miss 管道（第4.2.4节）还是 ContentStore hit 管道（第4.2.3节）处理。*/
+
 
 void
 Forwarder::onInterestLoop(const Interest& interest, const FaceEndpoint& ingress)
@@ -217,8 +258,23 @@ Forwarder::onInterestLoop(const Interest& interest, const FaceEndpoint& ingress)
   NFD_LOG_DEBUG("onInterestLoop in=" << ingress << " interest=" << interest.getName()
                 << " nonce=" << interest.getNonce());
 
-  // leave loop handling up to the strategy (e.g., whether to reply with a Nack)
+  // 这行是重点：
+  //leave loop handling up to the strategy (e.g., whether to reply with a Nack)
   m_strategyChoice.findEffectiveStrategy(interest.getName()).onInterestLoop(interest, ingress);
+  
+  /* m_strategyChoice.findEffectiveStrategy(interest.getName())
+  * 找出对应这个 Interest name 的有效转发策略（Strategy）。
+   .onInterestLoop(interest, ingress)
+   调用这个策略的 onInterestLoop() 方法，让策略决定怎么处理这个 Loop Interest！*/
+  
+ /*NFD_LOG_DEBUG("onInterestLoop in=" << ingress << " interest=" << interest.getName()
+              << " send-Nack-duplicate");
+
+  // send Nack with reason=DUPLICATE
+  // note: Don't enter outgoing Nack pipeline because it needs an in-record.
+  lp::Nack nack(interest);
+  nack.setReason(lp::NackReason::DUPLICATE);
+  ingress.face.sendNack(nack, ingress.endpoint);*/
 }
 
 void

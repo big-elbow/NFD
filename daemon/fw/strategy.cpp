@@ -309,12 +309,14 @@ Strategy::sendNacks(const lp::NackHeader& header, const shared_ptr<pit::Entry>& 
   // warning: don't loop on pitEntry->getInRecords(), because in-record is deleted when sending Nack
 }
 
+//Strategy::lookupFib 考虑 forwarding hint 来实现FIB查找过程
 const fib::Entry&
 Strategy::lookupFib(const pit::Entry& pitEntry) const
 {
-  const Fib& fib = m_forwarder.getFib();
+  const Fib& fib = m_forwarder.getFib();//从转发器（m_forwarder）中获取 FIB 的引用
 
-  const Interest& interest = pitEntry.getInterest();
+  const Interest& interest = pitEntry.getInterest();//从 PIT 条目（pitEntry）中提取 Interest（兴趣包）对象的引用
+  
   // has forwarding hint?
   if (interest.getForwardingHint().empty()) {
     // FIB lookup with Interest name
@@ -323,15 +325,26 @@ Strategy::lookupFib(const pit::Entry& pitEntry) const
     return fibEntry;
   }
 
+  // 此时存在转发提示表示兴趣尚未到达生产者区域，因为在进入生产者区域时，应该在传入的 Incoming Interest 管道中删除转发提示
+  // 有 Forwarding Hint 的情况：初始化
   const auto& fh = interest.getForwardingHint();
   // Forwarding hint should have been stripped by incoming Interest pipeline when reaching producer region
   BOOST_ASSERT(!m_forwarder.getNetworkRegionTable().isInProducerRegion(fh));
+  //BOOST_ASSERT(expression);
+  //expression：一个返回布尔值的表达式（true 或 false）
+  /*如果 expression 为 true，什么也不做，程序继续运行。
+    如果 expression 为 false，在调试模式下：
+    程序终止。
+    输出错误信息（通常包括文件名、行号和失败的表达式）。
+    在发布模式下，BOOST_ASSERT 通常被禁用（不执行检查），以提高性能。*/
 
+  //Forwarding Hint 是 Interest 中的一个字段，包含一组名称（delegations），用于提示转发器如何在 FIB 中查找转发路径
   const fib::Entry* fibEntry = nullptr;
   for (const auto& delegation : fh) {
     fibEntry = &fib.findLongestPrefixMatch(delegation);
     if (fibEntry->hasNextHops()) {
       if (fibEntry->getPrefix().empty()) {
+        //空前缀（ndn:/）：表示默认路由，通常在消费者区域
         // in consumer region, return the default route
         NFD_LOG_TRACE("lookupFib inConsumerRegion found=" << fibEntry->getPrefix());
       }
@@ -341,10 +354,12 @@ Strategy::lookupFib(const pit::Entry& pitEntry) const
       }
       return *fibEntry;
     }
+    //通过 BOOST_ASSERT 断言该条目是默认条目（ndn:/），因为只有默认条目允许没有下一跳
     BOOST_ASSERT(fibEntry->getPrefix().empty()); // only ndn:/ FIB entry can have zero nexthop
   }
-  BOOST_ASSERT(fibEntry != nullptr && fibEntry->getPrefix().empty());
+  BOOST_ASSERT(fibEntry != nullptr && fibEntry->getPrefix().empty());//如果 Forwarding Hint 中的所有 delegation 都没有找到带有 nexthop 的 FIB 条目，则返回默认条目
   return *fibEntry; // only occurs if no delegation finds a FIB nexthop
+  //确保 fibEntry 不为空且其前缀为空，返回默认条目引用
 }
 
 } // namespace nfd::fw

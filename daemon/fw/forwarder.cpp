@@ -288,19 +288,23 @@ Forwarder::onContentStoreMiss(const Interest& interest, const FaceEndpoint& ingr
   if (m_config.defaultHopLimit > 0 && !interest.getHopLimit()) {
     const_cast<Interest&>(interest).setHopLimit(m_config.defaultHopLimit);
   }
-
+  //如果系统配置了 defaultHopLimit > 0（默认跳数限制），且这个 Interest 自己没有 HopLimit，那就给 Interest 设置一个默认的 HopLimit。HopLimit 控制 Interest 最多可以经过多少跳，防止无限循环！
+  //const_cast 是为了临时去掉 Interest 的 const 限制，从而能修改它
+  
   // insert in-record
   pitEntry->insertOrUpdateInRecord(ingress.face, interest);
 
   // set PIT expiry timer to the time that the last PIT in-record expires
+  // lastExpiring 是一个迭代器，指向过期时间最晚的 In-Record
+  // Lambda 表达式 [] (const auto& a, const auto& b) { return a.getExpiry() < b.getExpiry(); }：定义比较函数，比较两个 In-Record 的过期时间，返回 true 表示 a 小于 b（即 a 过期时间早于 b）
   auto lastExpiring = std::max_element(pitEntry->in_begin(), pitEntry->in_end(),
                                        [] (const auto& a, const auto& b) {
                                          return a.getExpiry() < b.getExpiry();
                                        });
-  auto lastExpiryFromNow = lastExpiring->getExpiry() - time::steady_clock::now();
+  auto lastExpiryFromNow = lastExpiring->getExpiry() - time::steady_clock::now();//PIT条目上的到期计时器设置为最后一个PIT in-record 到期的时间，当到期计时器到期时，将执行 Interest Finalize 管道
   this->setExpiryTimer(pitEntry, time::duration_cast<time::milliseconds>(lastExpiryFromNow));
 
-  // has NextHopFaceId?
+  // has NextHopFaceId?  如果 Interest 在其NDNLPv2 header 中携带 NextHopFaceId 字段，则管道将遵循此字段
   auto nextHopTag = interest.getTag<lp::NextHopFaceIdTag>();
   if (nextHopTag != nullptr) {
     // chosen NextHop face exists?
@@ -314,21 +318,26 @@ Forwarder::onContentStoreMiss(const Interest& interest, const FaceEndpoint& ingr
     }
     return;
   }
-
+//lp::NextHopFaceIdTag 是一个 NDN 特定的标签，允许应用程序显式指定 Interest 的下一跳
+  
   // dispatch to strategy: after receive Interest
   m_strategyChoice.findEffectiveStrategy(*pitEntry)
     .afterReceiveInterest(interest, FaceEndpoint(ingress.face), pitEntry);
+  //使用 m_strategyChoice 查找与当前 PIT 条目关联的转发策略（findEffectiveStrategy），调用策略的 afterReceiveInterest 方法，传递 Interest、来源 Face 和 PIT 条目。
 }
+
 
 void
 Forwarder::onContentStoreHit(const Interest& interest, const FaceEndpoint& ingress,
                              const shared_ptr<pit::Entry>& pitEntry, const Data& data)
 {
   NFD_LOG_DEBUG("onContentStoreHit interest=" << interest.getName() << " nonce=" << interest.getNonce());
-  ++m_counters.nCsHits;
+  ++m_counters.nCsHits;//命中一次缓存，命中次数统计器 nCsHits 加 1
 
   data.setTag(make_shared<lp::IncomingFaceIdTag>(face::FACEID_CONTENT_STORE));
   data.setTag(interest.getTag<lp::PitToken>());
+  //IncomingFaceIdTag：说明这个数据是从 Content Store 出来的（特殊 face）。
+  //PitToken：从 Interest 复制过来的标记，用于让下游快速匹配到原来的请求。
   // FIXME Should we lookup PIT for other Interests that also match the data?
 
   pitEntry->isSatisfied = true;
@@ -349,7 +358,7 @@ Forwarder::onOutgoingInterest(const Interest& interest, Face& egress,
   if (interest.getHopLimit() == 0 && egress.getScope() == ndn::nfd::FACE_SCOPE_NON_LOCAL) {
     NFD_LOG_DEBUG("onOutgoingInterest out=" << egress.getId() << " interest=" << interest.getName()
                   << " nonce=" << interest.getNonce() << " non-local hop-limit=0");
-    ++egress.getCounters().nOutHopLimitZero;
+    ++egress.getCounters().nOutHopLimitZero;//增加 Face 的 nOutHopLimitZero 计数器，记录因 HopLimit 为 0 而丢弃的 Interest 数量
     return nullptr;
   }
 
@@ -357,10 +366,12 @@ Forwarder::onOutgoingInterest(const Interest& interest, Face& egress,
                 << " nonce=" << interest.getNonce());
 
   // insert out-record
-  auto it = pitEntry->insertOrUpdateOutRecord(egress, interest);
+  auto it = pitEntry->insertOrUpdateOutRecord(egress, interest);//该方法返回一个迭代器 it，指向新插入或更新的 Out-Record。
   BOOST_ASSERT(it != pitEntry->out_end());
-
+  //it != pitEntry->out_end()：检查 it 是否指向一个有效的 Out-Record，而不是列表末尾。
+  //如果 it == pitEntry->out_end()，表示 insertOrUpdateOutRecord 没有成功插入或更新 Out-Record，这是一个异常情况。
   // send Interest
+  
   egress.sendInterest(interest);
   ++m_counters.nOutInterests;
 

@@ -398,6 +398,7 @@ Forwarder::onInterestFinalize(const shared_ptr<pit::Entry>& pitEntry)
   // PIT delete
   pitEntry->expiryTimer.cancel();
   m_pit.erase(pitEntry.get());
+  //Interest Finalize 管道在 Forwarder::onInterestFinalize 方法中实现，一般是由到期计时器（ expiry timer ）到期时触发。
 }
 
 void
@@ -417,7 +418,7 @@ Forwarder::onIncomingData(const Data& data, const FaceEndpoint& ingress)
   }
 
   // PIT match
-  pit::DataMatchResult pitMatches = m_pit.findAllDataMatches(data);
+  pit::DataMatchResult pitMatches = m_pit.findAllDataMatches(data);//在 PIT 中查找所有匹配 Data 的条目，返回一个 pit::DataMatchResult（通常是一个 PIT 条目列表）
   if (pitMatches.size() == 0) {
     // go to Data unsolicited pipeline
     this->onDataUnsolicited(data, ingress);
@@ -425,9 +426,10 @@ Forwarder::onIncomingData(const Data& data, const FaceEndpoint& ingress)
   }
 
   // CS insert
-  m_cs.insert(data);
+  m_cs.insert(data);//m_cs 是转发器的 Content Store 实例
 
   // when only one PIT entry is matched, trigger strategy: after receive Data
+  //pitMatches.front() 返回匹配列表的第一个（也是唯一一个）PIT 条目
   if (pitMatches.size() == 1) {
     auto& pitEntry = pitMatches.front();
 
@@ -438,10 +440,13 @@ Forwarder::onIncomingData(const Data& data, const FaceEndpoint& ingress)
 
     // trigger strategy: after receive Data
     m_strategyChoice.findEffectiveStrategy(*pitEntry).afterReceiveData(data, ingress, pitEntry);
+    //查找 PIT 条目关联的转发策略（m_strategyChoice.findEffectiveStrategy），调用策略的 afterReceiveData 方法，通知策略已收到 Data。
 
     // mark PIT satisfied
     pitEntry->isSatisfied = true;
-    pitEntry->dataFreshnessPeriod = data.getFreshnessPeriod();
+    pitEntry->dataFreshnessPeriod = data.getFreshnessPeriod();//记录 Data 的新鲜期（data.getFreshnessPeriod()）到 PIT 条目
+    //dataFreshnessPeriod 用于后续判断 Data 是否仍新鲜（例如在 insertDeadNonceList 中）
+    
 
     // Dead Nonce List insert if necessary (for out-record of ingress face)
     this->insertDeadNonceList(*pitEntry, &ingress.face);
@@ -449,13 +454,20 @@ Forwarder::onIncomingData(const Data& data, const FaceEndpoint& ingress)
     // delete PIT entry's out-record
     pitEntry->deleteOutRecord(ingress.face);
   }
+    
   // when more than one PIT entry is matched, trigger strategy: before satisfy Interest,
   // and send Data to all matched out faces
+  //如果有多个 PIT 条目匹配（pitMatches.size() > 1），进入多匹配处理逻辑
   else {
+      //std::set 是 C++ 标准模板库（STL）中的有序集合容器，存储唯一的元素（不允许重复），默认按 < 运算符排序，std::set 自动去重，确保每个 Face 只出现一次
+      //Face* 是指向 NDN 中 Face 对象的指针，Face 表示一个网络接口（如远程节点连接或本地应用程序接口）
+      //pendingDownstreams 是一个 std::set，元素是 Face*，用于存储一组唯一的 Face 指针    
     std::set<Face*> pendingDownstreams;
     auto now = time::steady_clock::now();
 
     for (const auto& pitEntry : pitMatches) {
+      //const auto& 表示 pitEntry 是一个常量引用，绑定到 pitMatches 中的每个元素，避免拷贝并确保不修改原始对象
+      //pitEntry 是一个引用，绑定到 pitMatches 中的每个 shared_ptr<pit::Entry> 对象
       NFD_LOG_DEBUG("onIncomingData matching=" << pitEntry->getName());
 
       // remember pending downstreams
@@ -470,12 +482,13 @@ Forwarder::onIncomingData(const Data& data, const FaceEndpoint& ingress)
 
       // invoke PIT satisfy callback
       m_strategyChoice.findEffectiveStrategy(*pitEntry).beforeSatisfyInterest(data, ingress, pitEntry);
+      //beforeSatisfyInterest 在 Interest 被满足前触发，允许策略执行预处理（如记录状态）
 
       // mark PIT satisfied
       pitEntry->isSatisfied = true;
       pitEntry->dataFreshnessPeriod = data.getFreshnessPeriod();
 
-      // Dead Nonce List insert if necessary (for out-record of ingress face)
+      // Dead Nonce List insert if necessary (for out-record of ingress face)     
       this->insertDeadNonceList(*pitEntry, &ingress.face);
 
       // clear PIT entry's in and out records
@@ -500,6 +513,7 @@ Forwarder::onDataUnsolicited(const Data& data, const FaceEndpoint& ingress)
   ++m_counters.nUnsolicitedData;
 
   // accept to cache?
+  //默认情况下，NFD转发配置了 drop-all 策略
   auto decision = m_unsolicitedDataPolicy->decide(ingress.face, data);
   NFD_LOG_DEBUG("onDataUnsolicited in=" << ingress << " data=" << data.getName()
                 << " decision=" << decision);
@@ -508,6 +522,8 @@ Forwarder::onDataUnsolicited(const Data& data, const FaceEndpoint& ingress)
     m_cs.insert(data, true);
   }
 }
+//在某些情况下，需要接受未经请求的 Data，可以在NFD配置文件中的 tables.cs_unsolicited_policy 处更改该策略。
+
 
 bool
 Forwarder::onOutgoingData(const Data& data, Face& egress)
@@ -536,6 +552,7 @@ Forwarder::onOutgoingData(const Data& data, Face& egress)
   return true;
 }
 
+//Incoming Nack 管道是在 Forwarder::onIncomingNack 方法中实现的，由/Forwarder::startProcessNack 方法内部调用
 void
 Forwarder::onIncomingNack(const lp::Nack& nack, const FaceEndpoint& ingress)
 {
@@ -543,12 +560,16 @@ Forwarder::onIncomingNack(const lp::Nack& nack, const FaceEndpoint& ingress)
   ++m_counters.nInNacks;
 
   // if multi-access or ad hoc face, drop
+  //首先，如果判断传入 Face 不是点对点 Face ，则无需进一步处理就删除 Nack ，因为 Nack 的语义仅在点对点链接中定义
   if (ingress.face.getLinkType() != ndn::nfd::LINK_TYPE_POINT_TO_POINT) {
     NFD_LOG_DEBUG("onIncomingNack in=" << ingress << " nack=" << nack.getInterest().getName()
                   << "~" << nack.getReason() << " link-type=" << ingress.face.getLinkType());
     return;
   }
-
+  
+/* Nack 中携带的 Interest 及其传入 Face 用于在 PIT 表中查找匹配的 out record ，并且最后传出的 Nonce 与 Nack 中携带的 Nonce 相同。 
+ * 如果发现了这样的 out records ，则会将其标记为 Nacked ，并注明 Nacked 的原因。否则，会将 Nack 删除，因为它不再相关。*/
+  
   // PIT match
   shared_ptr<pit::Entry> pitEntry = m_pit.find(nack.getInterest());
   // if no PIT entry found, drop
@@ -568,6 +589,8 @@ Forwarder::onIncomingNack(const lp::Nack& nack, const FaceEndpoint& ingress)
   }
 
   // if out-record has different Nonce, drop
+  //比较 Nack 携带的 Interest 的 Nonce（nack.getInterest().getNonce()）与 Out-Record 的最新 Nonce（outRecord->getLastNonce()）
+  //防止处理无关或过期的 Nack，确保 Nack 的准确性
   if (nack.getInterest().getNonce() != outRecord->getLastNonce()) {
     NFD_LOG_DEBUG("onIncomingNack in=" << ingress << " nack=" << nack.getInterest().getName()
                   << "~" << nack.getReason() << " nonce-mismatch " << nack.getInterest().getNonce()
@@ -577,11 +600,15 @@ Forwarder::onIncomingNack(const lp::Nack& nack, const FaceEndpoint& ingress)
 
   NFD_LOG_DEBUG("onIncomingNack in=" << ingress << " nack=" << nack.getInterest().getName()
                 << "~" << nack.getReason());
+  //Nack 的拒绝原因（nack.getReason()，如 lp::NackReason::CONGESTION）
 
   // record Nack on out-record
   outRecord->setIncomingNack(nack);
+  //将 Nack 记录到匹配的 Out-Record 中，调用 setIncomingNack 方法
+  //setIncomingNack 通常标记 Out-Record 为“Nacked”状态，并存储 Nack 的原因
 
   // set PIT expiry timer to now when all out-record receive Nack
+  //如果条件成立（即没有待处理的 Out-Records），代码会执行 this->setExpiryTimer(pitEntry, 0_ms)
   if (!fw::hasPendingOutRecords(*pitEntry)) {
     this->setExpiryTimer(pitEntry, 0_ms);
   }
@@ -590,6 +617,7 @@ Forwarder::onIncomingNack(const lp::Nack& nack, const FaceEndpoint& ingress)
   m_strategyChoice.findEffectiveStrategy(*pitEntry).afterReceiveNack(nack, ingress, pitEntry);
 }
 
+//Outgoing Nack 管道在 Forwarder::onOutgoingNack 方法中实现，在 Strategy::sendNack 方法中被调用，该方法处理策略的 Nack 发送动作
 bool
 Forwarder::onOutgoingNack(const lp::NackHeader& nack, Face& egress,
                           const shared_ptr<pit::Entry>& pitEntry)
@@ -604,13 +632,17 @@ Forwarder::onOutgoingNack(const lp::NackHeader& nack, Face& egress,
   auto inRecord = pitEntry->findInRecord(egress);
 
   // if no in-record found, drop
+  // 如果这个 Face 没有发送过 Interest（即没有 In-Record），发送 Nack 就没有意义
+  // 确保 Nack 只发送给实际请求 Interest 的 Face
   if (inRecord == pitEntry->in_end()) {
     NFD_LOG_DEBUG("onOutgoingNack out=" << egress.getId() << " nack=" << pitEntry->getName()
                   << "~" << nack.getReason() << " no-in-record");
     return false;
   }
-
+  
   // if multi-access or ad hoc face, drop
+  //Nack 的语义在点对点链接中才明确。多路访问或临时链接中，Nack 的目标不明确，可能导致混乱
+  //保证 Nack 只在适合的网络环境中发送
   if (egress.getLinkType() != ndn::nfd::LINK_TYPE_POINT_TO_POINT) {
     NFD_LOG_DEBUG("onOutgoingNack out=" << egress.getId() << " nack=" << pitEntry->getName()
                   << "~" << nack.getReason() << " link-type=" << egress.getLinkType());
@@ -621,6 +653,7 @@ Forwarder::onOutgoingNack(const lp::NackHeader& nack, Face& egress,
                 << "~" << nack.getReason());
 
   // create Nack packet with the Interest from in-record
+  //用 In-Record 中的 Interest（inRecord->getInterest()）创建一个 Nack 包（lp::Nack）
   lp::Nack nackPkt(inRecord->getInterest());
   nackPkt.setHeader(nack);
 

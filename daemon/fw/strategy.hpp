@@ -132,12 +132,16 @@ public: // triggers
   /**
    * \brief Trigger after an Interest is received.
    *
+   *  当NFD收到一个 Interest ，会传递给 Incoming Interest 管道处理，经过必要的检查之后如果这个 Interest 还需要被转发，
+   *  则 Incoming Interest 管道会触发 Interest 所关联策略的 Strategy::afterReceiveInterest 触发器
+   * （以收到的 Interest、入口 Face 和对应的PIT条目作为参数）
+   * 
    * The Interest:
    *  - has not exceeded HopLimit
-   *  - does not violate Scope
-   *  - has not looped
-   *  - cannot be satisfied by ContentStore
-   *  - is under a namespace managed by this strategy
+   *  - does not violate Scope / Interest 不违反 /localhost scope 限制
+   *  - has not looped / 不是循环的（ loop ）
+   *  - cannot be satisfied by ContentStore / Interest 没有命中缓存
+   *  - is under a namespace managed by this strategy / Interest 位于此策略管理的名称空间下
    *
    * The PIT entry is set to expire after InterestLifetime has elapsed at each downstream.
    *
@@ -146,16 +150,27 @@ public: // triggers
    *    invoke sendInterest() for each upstream, either now or shortly after via a scheduler event,
    *    but before the PIT entry expires.
    *    Optionally, the strategy can invoke setExpiryTimer() to adjust how long it would wait for a response.
+   * 如果策略决定转发此Interest， 对于每个上游，立即或稍后通过调度事件调用sendInterest()，但需在PIT条目过期之前。
+   * 可选地，策略可调用setExpiryTimer()调整等待响应的时间。
    *  - If the strategy has already forwarded this Interest previously and decides to continue
    *    waiting, do nothing.
    *    Optionally, the strategy can invoke setExpiryTimer() to adjust how long it would wait for a response.
+   * 如果策略之前已转发此Interest并决定继续等待，则不执行任何操作。 可选地，策略可调用setExpiryTimer()调整等待响应的时间。
    *  - If the strategy concludes that this Interest cannot be satisfied,
    *    invoke rejectPendingInterest() to erase the PIT entry.
+   * 如果策略认为此Interest无法满足， 调用rejectPendingInterest()删除PIT条目
+   *
+   * 当本触发器被触发后，策略应决定是否以及在何处转发此 Interest 。大多数策略都需要读取FIB条目来做出此决定，这可以通过调用 Strategy::lookupFib 访问器函数来获得。
+   * 如果该策略决定转发此 Interest ，则应至少调用一次 send interest 操作；如果该策略得出结论认为不能转发此 Interest ，
+   * 则应调用 Strategy::setExpiryTimer 操作并将该定时器设置为立即过期 ^8，以便相关PIT条目最终可以被移除。
+   * ^8 警告 ：尽管允许策略通过计时器延迟调用 send interest 操作，但在特殊情况下这种转发可能永远不会发生。例如，如果在等待此类计时器的过程中，NFD管理员在兴趣的名称空间上更新策略，则该计时器事件将被取消，并且新策略可能直到PIT条目中的所有记录都到期后才决定转发该兴趣。
    *
    * \warning The strategy must not retain a copy of the \p pitEntry shared_ptr after this function
    *          returns, otherwise undefined behavior may occur. However, the strategy is allowed to
    *          construct and keep a weak_ptr to \p pitEntry.
+   * 策略在此函数返回后不得保留\p pitEntry shared_ptr的副本，否则可能导致未定义行为。但策略可构造并保留指向\p pitEntry的weak_ptr
    */
+  //此方法是纯虚拟方法，因此必须被子类覆盖
   virtual void
   afterReceiveInterest(const Interest& interest, const FaceEndpoint& ingress,
                        const shared_ptr<pit::Entry>& pitEntry) = 0;
@@ -166,8 +181,8 @@ public: // triggers
    * The Interest:
    *  - has not exceeded HopLimit
    *  - does not violate Scope
-   *  - has looped
-   *  - is under a namespace managed by this strategy
+   *  - has looped /Interest 
+   *  - is under a namespace managed by this strategy 
    *
    * In the base class, this method sends a Nack with reason DUPLICATE to \p ingress.
    */

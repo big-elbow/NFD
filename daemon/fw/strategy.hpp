@@ -163,7 +163,8 @@ public: // triggers
    * 当本触发器被触发后，策略应决定是否以及在何处转发此 Interest 。大多数策略都需要读取FIB条目来做出此决定，这可以通过调用 Strategy::lookupFib 访问器函数来获得。
    * 如果该策略决定转发此 Interest ，则应至少调用一次 send interest 操作；如果该策略得出结论认为不能转发此 Interest ，
    * 则应调用 Strategy::setExpiryTimer 操作并将该定时器设置为立即过期 ^8，以便相关PIT条目最终可以被移除。
-   * ^8 警告 ：尽管允许策略通过计时器延迟调用 send interest 操作，但在特殊情况下这种转发可能永远不会发生。例如，如果在等待此类计时器的过程中，NFD管理员在兴趣的名称空间上更新策略，则该计时器事件将被取消，并且新策略可能直到PIT条目中的所有记录都到期后才决定转发该兴趣。
+   * ^8 警告 ：尽管允许策略通过计时器延迟调用 send interest 操作，但在特殊情况下这种转发可能永远不会发生。
+   * 例如，如果在等待此类计时器的过程中，NFD管理员在兴趣的名称空间上更新策略，则该计时器事件将被取消，并且新策略可能直到PIT条目中的所有记录都到期后才决定转发该兴趣。
    *
    * \warning The strategy must not retain a copy of the \p pitEntry shared_ptr after this function
    *          returns, otherwise undefined behavior may occur. However, the strategy is allowed to
@@ -202,88 +203,86 @@ public: // triggers
   afterContentStoreHit(const Data& data, const FaceEndpoint& ingress,
                        const shared_ptr<pit::Entry>& pitEntry);
 
-  /**
-   * \brief Trigger before a PIT entry is satisfied.
-   *
-   * This trigger is invoked when an incoming Data satisfies more than one PIT entry.
-   * The strategy can collect measurements information, but cannot manipulate Data forwarding.
-   * When an incoming Data satisfies only one PIT entry, afterReceiveData() is invoked instead
-   * and given full control over Data forwarding. If a strategy does not override afterReceiveData(),
-   * the default implementation invokes beforeSatisfyInterest().
-   *
-   * Normally, PIT entries are erased after receiving the first matching Data.
-   * If the strategy wishes to collect responses from additional upstream nodes,
-   * it should invoke setExpiryTimer() within this function to prolong the PIT entry lifetime.
-   * If a Data arrives from another upstream during the extended PIT entry lifetime, this trigger
-   * will be invoked again. At that time, the strategy must invoke setExpiryTimer() again to
-   * continue collecting more responses.
-   *
-   * In the base class, this method does nothing.
-   *
-   * \warning The strategy must not retain a copy of the \p pitEntry shared_ptr after this function
-   *          returns, otherwise undefined behavior may occur. However, the strategy is allowed to
-   *          construct and keep a weak_ptr to \p pitEntry.
-   */
+/**
+ * \brief 在 PIT 条目被满足之前触发
+ *
+ * 单 PIT 匹配：afterReceiveData 被调用，策略完全控制 Data 转发。
+ * 多 PIT 匹配：beforeSatisfyInterest 被调用，策略只能收集信息，不能控制转发。
+ *
+ * 当一个传入的 Data 满足多个 PIT 条目时，会调用此触发器。
+ * 策略可以在此收集测量信息，但无法控制 Data 的转发。
+ * 如果传入的 Data 只满足一个 PIT 条目，则会调用 afterReceiveData()，并将 Data 转发的完全控制权交给策略。
+ * 如果策略未重写 afterReceiveData()，其默认实现会调用 beforeSatisfyInterest()。
+ *
+ * 通常，PIT 条目在接收到第一个匹配的 Data 后会被删除。
+ * 如果策略希望从额外的上游节点收集响应，它应在此函数中调用 setExpiryTimer() 来延长 PIT 条目的生命周期。
+ * 如果在延长的 PIT 条目生命周期内，从另一个上游节点收到 Data，此触发器会再次被调用。
+ * 此时，策略必须再次调用 setExpiryTimer() 以继续收集更多响应。
+ *
+ * 在基类中，此方法不执行任何操作。
+ *
+ * \warning 策略在函数返回后不得保留 \p pitEntry shared_ptr 的副本，否则可能导致未定义行为。
+ *          但是，策略可以构造并保留对 \p pitEntry 的 weak_ptr。
+ */
   virtual void
   beforeSatisfyInterest(const Data& data, const FaceEndpoint& ingress,
                         const shared_ptr<pit::Entry>& pitEntry);
 
-  /**
-   * \brief Trigger after Data is received.
-   *
-   * This trigger is invoked when an incoming Data satisfies exactly one PIT entry,
-   * and gives the strategy full control over Data forwarding.
-   *
-   * When this trigger is invoked:
-   *  - The Data has been verified to satisfy the PIT entry.
-   *  - The PIT entry expiry timer is set to now
-   *
-   * Inside this function:
-   *  - A strategy should return Data to downstream nodes via sendData() or sendDataToAll().
-   *  - A strategy can modify the Data as long as it still satisfies the PIT entry, such as
-   *    adding or removing congestion marks.
-   *  - A strategy can delay Data forwarding by prolonging the PIT entry lifetime via setExpiryTimer(),
-   *    and later forward the Data before the PIT entry is erased.
-   *  - A strategy can collect measurements about the upstream.
-   *  - A strategy can collect responses from additional upstream nodes by prolonging the PIT entry
-   *    lifetime via setExpiryTimer() every time a Data is received. Note that only one Data should
-   *    be returned to each downstream node.
-   *
-   * In the base class, this method invokes beforeSatisfyInterest() and then returns the Data
-   * to all downstream faces via sendDataToAll().
-   *
-   * \warning The strategy must not retain a copy of the \p pitEntry shared_ptr after this function
-   *          returns, otherwise undefined behavior may occur. However, the strategy is allowed to
-   *          construct and keep a weak_ptr to \p pitEntry.
-   */
+/**
+ * \brief 在接收到 Data 后触发
+ *
+ * 当一个传入的 Data 恰好满足一个 PIT 条目时，会调用此触发器，并将 Data 转发的完全控制权交给策略。
+ * 补：（“恰好满足一个 PIT 条目”意味着 Data 与一个 Interest 完全匹配，没有多个 PIT 条目同时匹配的情况。）
+ *
+ * 调用此触发器时的条件：
+ *  - Data 已被验证能够满足 PIT 条目。
+ *  - PIT 条目的过期计时器已被设置为当前时间（now）。
+ *
+ * 在此函数内部：
+ *  - 策略应通过 sendData() 或 sendDataToAll() 将 Data 返回给下游节点。
+ *  - 策略可以修改 Data，只要它仍然满足 PIT 条目，例如添加或移除拥塞标记。
+ *  - 策略可以通过 setExpiryTimer() 延长 PIT 条目的生命周期来延迟 Data 转发，并在 PIT 条目被删除前稍后转发 Data。
+ *  - 策略可以收集关于上游的测量数据。
+ *  - 策略可以通过在每次接收到 Data 时使用 setExpiryTimer() 延长 PIT 条目生命周期，以从额外的上游节点收集响应。
+ *    注意：每个下游节点只能返回一个 Data。
+ *
+ * 在基类中，此方法会调用 beforeSatisfyInterest()，然后通过 sendDataToAll() 将 Data 返回给所有下游 Face。
+ *
+ * \warning 策略在函数返回后不得保留 \p pitEntry shared_ptr 的副本，否则可能导致未定义行为。
+ *          但是，策略可以构造并保留对 \p pitEntry 的 weak_ptr。
+ */
   virtual void
   afterReceiveData(const Data& data, const FaceEndpoint& ingress,
                    const shared_ptr<pit::Entry>& pitEntry);
 
   /**
-   * \brief Trigger after a Nack is received.
-   *
-   * This trigger is invoked when an incoming Nack is received in response to
-   * an forwarded Interest.
-   * The Nack has been confirmed to be a response to the last Interest forwarded
-   * to that upstream, i.e. the PIT out-record exists and has a matching Nonce.
-   * The NackHeader has been recorded in the PIT out-record.
-   *
-   * If the PIT entry is not yet satisfied, its expiry timer remains unchanged.
-   * Otherwise, the PIT entry will normally expire immediately after this function returns.
-   *
-   * If the strategy wishes to collect responses from additional upstream nodes,
-   * it should invoke setExpiryTimer() within this function to prolong the PIT entry lifetime.
-   * If a Nack arrives from another upstream during the extended PIT entry lifetime, this trigger
-   * will be invoked again. At that time, the strategy must invoke setExpiryTimer() again to
-   * continue collecting more responses.
-   *
-   * In the base class, this method does nothing.
-   *
-   * \warning The strategy must not retain a copy of the \p pitEntry shared_ptr after this function
-   *          returns, otherwise undefined behavior may occur. However, the strategy is allowed to
-   *          construct and keep a weak_ptr to \p pitEntry.
-   */
+ * \brief 在接收到 Nack 后触发
+ *
+ * 当接收到一个响应已转发 Interest 的传入 Nack（否定确认）时，会调用此触发器。
+ * Nack 已被确认为对最后转发到该上游的 Interest 的响应，即 PIT 的 Out-Record 存在且具有匹配的 Nonce。
+ * NackHeader（Nack 头部信息）已被记录在 PIT 的 Out-Record 中。
+ * PIT条目位于此策略管理的名称空间下^9
+ * ^9:注意：Nack 对应的 Interest 不一定是由同一个策略转发的。
+ * 如果在转发 Interest 后更改了有效策略，然后收到了对应的 Nack ，则会触发新的有效策略，而不是先前转发 Interest 的策略。
+ *
+ * 如果 PIT 条目尚未被满足（即未收到匹配的 Data），其过期计时器保持不变。
+ * 否则，PIT 条目通常会在此函数返回后立即过期。
+ *
+ * 如果策略希望从额外的上游节点收集响应，它应在此函数中调用 setExpiryTimer() 来延长 PIT 条目的生命周期。
+ * 如果在延长的 PIT 条目生命周期内，从另一个上游节点收到 Nack，此触发器会再次被调用。
+ * 此时，策略必须再次调用 setExpiryTimer() 以继续收集更多响应。
+ *
+ * 在基类中，此方法不执行任何操作。
+ *
+ * \warning 策略在函数返回后不得保留 \p pitEntry shared_ptr 的副本，否则可能导致未定义行为。
+ *          但是，策略可以构造并保留对 \p pitEntry 的 weak_ptr。
+ */
+
+/*当 After Receive Nack Trigger 被触发后，该策略通常可以执行以下操作之一：
+    通过调用 send Interest 操作将其转发到相同或不同的上游来重试兴趣（ Retry the Interest ）。大多数策略都需要一个FIB条目来找出潜在的上游，这可以通过调用 Strategy::lookupFib 访问器函数获得；
+    通过调用 send Nack 操作将 Nack 反回到下游，放弃对该 Interest 的重传尝试；
+    不对这个 Nack 做任何处理。如果 Nack 对应的 Interest 转发给了多个上游，且某些（但不是全部）上游回复了 Nack ，则该策略可能要等待来自更多上游的 Data 或 Nack 。
+    在这种情况下，该策略无需将 Nack 记录在其自己的 StrategyInfo 中，因为 NackHeader 已经存储在PIT out-record 的 Nacked 字段中了。*/
   virtual void
   afterReceiveNack(const lp::Nack& nack, const FaceEndpoint& ingress,
                    const shared_ptr<pit::Entry>& pitEntry);
@@ -307,6 +306,7 @@ public: // triggers
   afterNewNextHop(const fib::NextHop& nextHop, const shared_ptr<pit::Entry>& pitEntry);
 
 protected: // actions
+//操作（ Action ）是转发策略（ forwarding strategy ）做出的决策。操作（ Action ）被实现为 nfd::fw::Strategy 类的非虚拟保护方法。
   /**
    * \brief Send an Interest packet.
    * \param interest the Interest packet
@@ -314,9 +314,11 @@ protected: // actions
    * \param pitEntry the PIT entry
    * \return A pointer to the out-record created or nullptr if the Interest was dropped
    */
+ //该操作将启动 Outgoing Interest 管道处理流程
   NFD_VIRTUAL_WITH_TESTS pit::OutRecord*
   sendInterest(const Interest& interest, Face& egress, const shared_ptr<pit::Entry>& pitEntry);
-
+ /* 调用本操作的策略负责检查的转发是否不违反基于命名空间的范围控制[10]。通常，该策略应使用在PIT in-records 中找到的传入 Interest 之一来调用此操作。 
+  * 只要兴趣仍然与PIT条目相匹配，就可以制作一个兴趣的副本并修改其指导字段（通常指的是，修改 LpHeaderField ）。
   /**
    * \brief Send a Data packet.
    * \param data the Data packet

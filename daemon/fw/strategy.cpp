@@ -201,6 +201,9 @@ Strategy::beforeSatisfyInterest(const Data& data, const FaceEndpoint& ingress,
                 << " in=" << ingress << " data=" << data.getName());
 }
 
+
+/* 此触发器声明为 Strategy::afterReceiveData 方法。当传入的数据恰好满足一个PIT条目时，将调用此触发器，并为该策略提供对数据转发的完全控制权。
+ * 调用此触发器时，已验证数据满足PIT条目，并且PIT条目到期计时器设置为立即触发。*/
 void
 Strategy::afterReceiveData(const Data& data, const FaceEndpoint& ingress,
                            const shared_ptr<pit::Entry>& pitEntry)
@@ -211,6 +214,7 @@ Strategy::afterReceiveData(const Data& data, const FaceEndpoint& ingress,
   this->beforeSatisfyInterest(data, ingress, pitEntry);
   this->sendDataToAll(data, pitEntry, ingress.face);
 }
+
 
 void
 Strategy::afterReceiveNack(const lp::Nack&, const FaceEndpoint& ingress,

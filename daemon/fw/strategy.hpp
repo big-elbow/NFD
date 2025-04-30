@@ -364,6 +364,9 @@ protected: // actions
    * \param pitEntry the PIT entry
    * \return Whether the Nack was sent (true) or dropped (false)
    */
+/*此操将启动 Outgoing Nack 管道（第4.4.2节）处理流程。PIT条目中应存在一个下游 Face 的 in-record ，
+ * 并且通过从该 in-record 中获取最后一个传入的 Interest 并添加指定的 NackHeader ，将构造一个 Nack 包。
+ * 如果对应的PIT表项中缺少符合条件的 in-record ，则此操作无效。*/
   NFD_VIRTUAL_WITH_TESTS bool
   sendNack(const lp::NackHeader& header, Face& egress, const shared_ptr<pit::Entry>& pitEntry)
   {

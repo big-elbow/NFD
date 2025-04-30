@@ -247,21 +247,28 @@ Strategy::sendInterest(const Interest& interest, Face& egress, const shared_ptr<
   return m_forwarder.onOutgoingInterest(interest, egress, pitEntry);
 }
 
+//此操作将删除PIT条目的记录中的内容，并进入 Outgoing Data 管道
 bool
 Strategy::sendData(const Data& data, Face& egress, const shared_ptr<pit::Entry>& pitEntry)
 {
+  //使用 BOOST_ASSERT 断言，确保 Data 满足 PIT 条目中的 Interest
+  //matchesData(data) 检查 Data 是否满足 Interest（例如，名称匹配、签名验证等）
   BOOST_ASSERT(pitEntry->getInterest().matchesData(data));
 
+  //如果找到匹配的 In-Record，返回指向该记录的迭代器。
+  //如果未找到，返回 pitEntry->in_end()（表示结束的迭代器）
   auto inRecord = pitEntry->findInRecord(egress);
   if (inRecord != pitEntry->in_end()) {
-    auto pitToken = inRecord->getInterest().getTag<lp::PitToken>();
+    auto pitToken = inRecord->getInterest().getTag<lp::PitToken>();//从 In-Record 中的 Interest 获取 lp::PitToken 标签
 
     // delete the PIT entry's in-record based on egress,
     // since the Data is sent to the face from which the Interest was received
-    pitEntry->deleteInRecord(inRecord);
+    pitEntry->deleteInRecord(inRecord);//从 PIT 条目中删除与 egress 关联的 In-Record
 
     if (pitToken != nullptr) {
+      //复制确保每个下游 Face 可以接收独立的 Data（可能携带不同的 PitToken
       Data data2 = data; // make a copy so each downstream can get a different PIT token
+      //将从 In-Record 获取的 PitToken 设置到 Data 副本上
       data2.setTag(pitToken);
       return m_forwarder.onOutgoingData(data2, egress);
     }
@@ -269,9 +276,14 @@ Strategy::sendData(const Data& data, Face& egress, const shared_ptr<pit::Entry>&
   return m_forwarder.onOutgoingData(data, egress);
 }
 
+/* 在许多情况下，该策略可能希望将 Data 发送到每个下游。Strategy::sendDataToAll 方法是用于此目的的帮助程序，它接受PIT条目，Data 和 传入 Data 的 Face 。
+ * 请注意，Strategy::sendDataToAll 会将数据发送到每个待处理的下游，除非待处理的下游 Face 与数据的传入 Face 相同，并且该 Face 不是临时的。*/
 void
 Strategy::sendDataToAll(const Data& data, const shared_ptr<pit::Entry>& pitEntry, const Face& inFace)
 {
+  //定义一个 std::set 容器 pendingDownstreams，存储指向下游 Face 的指针（Face*）
+  /* std::set 确保 Face 指针的唯一性（避免重复发送）。
+   * 提供有序存储（按指针值排序），虽然在本例中排序非必需。*/
   std::set<Face*> pendingDownstreams;
   auto now = time::steady_clock::now();
 
@@ -282,7 +294,7 @@ Strategy::sendDataToAll(const Data& data, const shared_ptr<pit::Entry>& pitEntry
           inRecord.getFace().getLinkType() != ndn::nfd::LINK_TYPE_AD_HOC) {
         continue;
       }
-      pendingDownstreams.emplace(&inRecord.getFace());
+      pendingDownstreams.emplace(&inRecord.getFace());//emplace 直接构造并插入指针，确保高效且唯一
     }
   }
 
@@ -291,6 +303,8 @@ Strategy::sendDataToAll(const Data& data, const shared_ptr<pit::Entry>& pitEntry
   }
 }
 
+/*在许多情况下，该策略可能希望将 Nacks 发送到每个下游（同样的对每个要发送的下游 Face 都有匹配的 in-record ）。 
+ * Strategy::sendNacks 方法是用于此目的的辅助方法，它接受PIT条目和 NackHeader 。调用此帮助程序方法等效于为每个下游调用 send Nack 操作。*/
 void
 Strategy::sendNacks(const lp::NackHeader& header, const shared_ptr<pit::Entry>& pitEntry,
                     std::initializer_list<const Face*> exceptFaces)

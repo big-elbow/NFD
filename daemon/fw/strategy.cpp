@@ -311,11 +311,15 @@ Strategy::sendNacks(const lp::NackHeader& header, const shared_ptr<pit::Entry>& 
 {
   // populate downstreams with all downstreams faces
   std::unordered_set<Face*> downstreams;
+  /*遍历 In-Records，将每个 In-Record 转换为对应的 Face 指针。
+   * 转换函数：[] (const auto& inR) { return &inR.getFace(); } 获取 In-Record 的 Face 指针。
+   * std::inserter(downstreams, downstreams.end())：一个插入迭代器，将转换结果插入 downstreams。
+   * 确保 Face 指针唯一（std::unordered_set 自动去重）*/
   std::transform(pitEntry->in_begin(), pitEntry->in_end(),
                  std::inserter(downstreams, downstreams.end()),
                  [] (const auto& inR) { return &inR.getFace(); });
 
-  // remove excluded faces
+  // remove excluded faces 从 downstreams 中移除 exceptFaces 中指定的 Face
   for (auto exceptFace : exceptFaces) {
     downstreams.erase(const_cast<Face*>(exceptFace));
   }
@@ -325,6 +329,7 @@ Strategy::sendNacks(const lp::NackHeader& header, const shared_ptr<pit::Entry>& 
     this->sendNack(header, *downstream, pitEntry);
   }
   // warning: don't loop on pitEntry->getInRecords(), because in-record is deleted when sending Nack
+  //提醒开发者不要直接遍历 pitEntry->getInRecords() 来发送 Nack
 }
 
 //Strategy::lookupFib 考虑 forwarding hint 来实现FIB查找过程
